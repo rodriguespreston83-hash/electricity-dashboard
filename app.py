@@ -86,12 +86,12 @@ uploaded = st.sidebar.file_uploader("Upload CSV/Excel", type=["csv", "xlsx"])
 tariff_name = st.sidebar.selectbox("Tariff", list(TARIFFS.keys()))
 tariff = TARIFFS[tariff_name]
 
-night_start = time(23, 0)
-night_end = time(8, 0)
+night_start = time(24, 0)
+night_end = time(9, 0)
 
 if tariff["type"] == "nightsaver":
-    night_start = time(st.sidebar.slider("Night Start", 0, 23, 23), 0)
-    night_end = time(st.sidebar.slider("Night End", 0, 23, 8), 0)
+    night_start = time(st.sidebar.slider("Night Start", 0, 24, 24), 0)
+    night_end = time(st.sidebar.slider("Night End", 0, 24, 9), 0)
 
 # ── Main ───────────────────────────────────────────────
 st.title("⚡ Electricity Dashboard")
