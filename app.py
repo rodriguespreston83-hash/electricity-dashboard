@@ -5,10 +5,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import time, timedelta
 
-# ── Page Config ─────────────────────────────────────────────
 st.set_page_config(page_title="Electricity Dashboard", layout="wide")
 
-# ── Tariffs ─────────────────────────────────────────────────
+# ── Tariffs ─────────────────────────────────────────────
 TARIFFS = {
     "Standard Urban": {"type": "standard", "rate": 0.3762, "standing": 1.4416},
     "Standard Rural": {"type": "standard", "rate": 0.3762, "standing": 1.7296},
@@ -16,21 +15,35 @@ TARIFFS = {
     "Rural NightSaver": {"type": "nightsaver", "day": 0.4206, "night": 0.2077, "standing": 1.9821},
 }
 
-# ── Load Data ───────────────────────────────────────────────
+# ── Load Data ───────────────────────────────────────────
 def load_data(file):
     df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
     df.columns = df.columns.str.strip()
 
-    # Auto detect columns
-    time_col = [c for c in df.columns if "date" in c.lower()][0]
-    value_col = [c for c in df.columns if "value" in c.lower()][0]
+    # Auto-detect columns
+    time_col = next((c for c in df.columns if "date" in c.lower()), None)
+    value_col = next((c for c in df.columns if "value" in c.lower()), None)
 
-    df["timestamp"] = pd.to_datetime(df[time_col], errors="coerce", dayfirst=True)
+    if not time_col or not value_col:
+        raise ValueError("Required columns not found")
+
+    df["timestamp"] = pd.to_datetime(df[time_col], dayfirst=True, errors="coerce")
     df["kWh"] = pd.to_numeric(df[value_col], errors="coerce").fillna(0)
 
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    df = df.dropna(subset=["timestamp"])
+
+    # 🔥 FIX: handle duplicates
+    dupes = df["timestamp"].duplicated().sum()
+    if dupes > 0:
+        st.warning(f"⚠️ {dupes} duplicate timestamps found — merged automatically")
+        df = df.groupby("timestamp", as_index=False)["kWh"].sum()
+
+    df = df.sort_values("timestamp")
+
+    # Fill missing 30-min intervals
     df = df.set_index("timestamp").asfreq("30min", fill_value=0).reset_index()
 
+    # Time features
     df["date"] = df["timestamp"].dt.date
     df["hour"] = df["timestamp"].dt.hour
     df["time"] = df["timestamp"].dt.strftime("%H:%M")
@@ -39,14 +52,14 @@ def load_data(file):
 
     return df
 
-# ── Night Logic ─────────────────────────────────────────────
+# ── Night Logic ─────────────────────────────────────────
 def is_night(ts, start, end):
     t = ts.dt.time
     if start > end:
         return (t >= start) | (t < end)
     return (t >= start) & (t < end)
 
-# ── Cost Calculation ────────────────────────────────────────
+# ── Apply Tariff ─────────────────────────────────────────
 def apply_tariff(df, tariff, night_start, night_end):
     df = df.copy()
 
@@ -56,6 +69,7 @@ def apply_tariff(df, tariff, night_start, night_end):
     else:
         mask = is_night(df["timestamp"], night_start, night_end)
         df["period"] = np.where(mask, "Night", "Day")
+
         df["cost"] = np.where(
             df["period"] == "Night",
             df["kWh"] * tariff["night"],
@@ -64,7 +78,7 @@ def apply_tariff(df, tariff, night_start, night_end):
 
     return df
 
-# ── Sidebar ────────────────────────────────────────────────
+# ── Sidebar ─────────────────────────────────────────────
 st.sidebar.title("⚡ Controls")
 
 uploaded = st.sidebar.file_uploader("Upload CSV/Excel", type=["csv", "xlsx"])
@@ -79,21 +93,29 @@ if tariff["type"] == "nightsaver":
     night_start = time(st.sidebar.slider("Night Start", 0, 23, 23), 0)
     night_end = time(st.sidebar.slider("Night End", 0, 23, 8), 0)
 
-# ── Main ───────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────
 st.title("⚡ Electricity Dashboard")
 
 if uploaded is None:
-    st.info("Upload a file to begin.")
+    st.info("Upload a file to begin")
     st.stop()
 
 df = load_data(uploaded)
 df = apply_tariff(df, tariff, night_start, night_end)
 
-# ── Date Filter ─────────────────────────────────────────────
-start, end = st.date_input("Date Range", [df["date"].min(), df["date"].max()])
+# ── Date Filter ─────────────────────────────────────────
+start, end = st.date_input(
+    "Date Range",
+    [df["date"].min(), df["date"].max()]
+)
+
 df = df[(df["date"] >= start) & (df["date"] <= end)]
 
-# ── Daily Aggregation ───────────────────────────────────────
+if df.empty:
+    st.warning("No data in selected range")
+    st.stop()
+
+# ── Daily Aggregation ───────────────────────────────────
 daily = df.groupby("date").agg(
     kWh=("kWh", "sum"),
     cost=("cost", "sum")
@@ -101,28 +123,29 @@ daily = df.groupby("date").agg(
 
 daily["cost"] += tariff["standing"]
 
-# ── KPIs ───────────────────────────────────────────────────
+# ── KPIs ───────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 
 col1.metric("Total kWh", f"{df['kWh'].sum():.1f}")
 col2.metric("Total Cost €", f"{daily['cost'].sum():.2f}")
 col3.metric("Avg Daily kWh", f"{daily['kWh'].mean():.2f}")
 
-# ── Charts ─────────────────────────────────────────────────
+# ── Tabs ───────────────────────────────────────────────
 tab1, tab2, tab3 = st.tabs(["Daily", "Heatmap", "Day vs Night"])
 
-# Daily trend
+# ── Daily Trends ───────────────────────────────────────
 with tab1:
-    fig = px.line(daily, x="date", y="kWh", title="Daily Consumption")
-    st.plotly_chart(fig, use_container_width=True)
+    fig1 = px.line(daily, x="date", y="kWh", title="Daily Consumption")
+    st.plotly_chart(fig1, use_container_width=True)
 
     fig2 = px.line(daily, x="date", y="cost", title="Daily Cost")
     st.plotly_chart(fig2, use_container_width=True)
 
-# Heatmap
+# ── Heatmap ────────────────────────────────────────────
 with tab2:
     pivot = df.pivot_table(index="time", columns="date", values="kWh", aggfunc="sum")
-    pivot = pivot.reindex(sorted(pivot.index))
+
+    pivot = pivot.reindex(sorted(pivot.index, key=lambda x: pd.to_datetime(x, format="%H:%M")))
 
     fig = go.Figure(go.Heatmap(
         z=pivot.values,
@@ -132,30 +155,41 @@ with tab2:
     ))
     st.plotly_chart(fig, use_container_width=True)
 
-# Day vs Night
+# ── Day vs Night ───────────────────────────────────────
 with tab3:
     if tariff["type"] == "nightsaver":
         split = df.groupby("period")["kWh"].sum()
 
-        fig = px.pie(
-            values=split.values,
-            names=split.index,
-            title="Day vs Night Usage"
-        )
+        total = split.sum() if split.sum() > 0 else 1
+
+        colA, colB = st.columns(2)
+        colA.metric("Day %", f"{(split.get('Day',0)/total)*100:.1f}%")
+        colB.metric("Night %", f"{(split.get('Night',0)/total)*100:.1f}%")
+
+        fig = px.pie(values=split.values, names=split.index, title="Usage Split")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Select a NightSaver tariff")
+        st.info("Switch to NightSaver tariff")
 
-# ── Forecast ───────────────────────────────────────────────
+# ── Forecast ───────────────────────────────────────────
 st.subheader("📊 7-Day Forecast")
 
 avg = daily["kWh"].tail(14).mean()
-future = pd.date_range(daily["date"].max(), periods=7)
+future_dates = pd.date_range(daily["date"].max(), periods=7)
 
 forecast = pd.DataFrame({
-    "date": future,
+    "date": future_dates,
     "kWh": avg
 })
+
+# Cost estimate
+if tariff["type"] == "standard":
+    forecast["cost"] = forecast["kWh"] * tariff["rate"] + tariff["standing"]
+else:
+    forecast["cost"] = (
+        forecast["kWh"] * (0.6 * tariff["day"] + 0.4 * tariff["night"])
+        + tariff["standing"]
+    )
 
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=daily["date"], y=daily["kWh"], name="Actual"))
