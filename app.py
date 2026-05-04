@@ -143,17 +143,88 @@ with tab1:
 
 # ── Heatmap ────────────────────────────────────────────
 with tab2:
-    pivot = df.pivot_table(index="time", columns="date", values="kWh", aggfunc="sum")
+    st.subheader("🔥 Advanced Heatmap")
 
-    pivot = pivot.reindex(sorted(pivot.index, key=lambda x: pd.to_datetime(x, format="%H:%M")))
+    # ── Mode Toggle (like your JS)
+    mode = st.radio("View Mode", ["Weekday x Hour", "Month x Hour"], horizontal=True)
 
+    df_copy = df.copy()
+
+    # ── Build matrix (same logic as your JS)
+    if mode == "Weekday x Hour":
+        df_copy["dow"] = df_copy["timestamp"].dt.dayofweek  # Mon=0
+        grouped = df_copy.groupby(["dow", "hour"])["kWh"].mean().reset_index()
+
+        pivot = grouped.pivot(index="dow", columns="hour", values="kWh")
+
+        # Reorder to Mon→Sun
+        pivot = pivot.reindex([0,1,2,3,4,5,6])
+        pivot.index = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+
+        title = "Avg kWh per Interval — Weekday x Hour"
+
+    else:
+        df_copy["month"] = df_copy["timestamp"].dt.to_period("M").astype(str)
+        grouped = df_copy.groupby(["month", "hour"])["kWh"].mean().reset_index()
+
+        pivot = grouped.pivot(index="month", columns="hour", values="kWh")
+        pivot = pivot.sort_index()
+
+        title = "Avg kWh per Interval — Month x Hour"
+
+    pivot = pivot.fillna(0)
+
+    # ── Heatmap
     fig = go.Figure(go.Heatmap(
         z=pivot.values,
-        x=pivot.columns,
+        x=[f"{h:02d}:00" for h in pivot.columns],
         y=pivot.index,
-        colorscale="RdYlBu_r"
+        colorscale=[
+            [0.0, "#0d1117"],
+            [0.3, "#1a3a5c"],
+            [0.6, "#1d6fa4"],
+            [0.85, "#f59e0b"],
+            [1.0, "#ef4444"],
+        ],
+        hovertemplate="Time: %{x}<br>Row: %{y}<br>kWh: %{z:.4f}<extra></extra>"
     ))
+
+    fig.update_layout(
+        title=title,
+        height=500,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#94a3b8"),
+    )
+
     st.plotly_chart(fig, use_container_width=True)
+
+    # ── KPI Logic (same as your JS)
+    st.markdown("### 📊 Heatmap Insights")
+
+    hour_avg = df_copy.groupby("hour")["kWh"].mean()
+    peak_hour = hour_avg.idxmax()
+
+    night_avg = df_copy[df_copy["hour"].isin([0,1,2,3,4])]["kWh"].mean()
+    midday_avg = df_copy[df_copy["hour"].isin([9,10,11,12,13])]["kWh"].mean()
+    evening_avg = df_copy[df_copy["hour"].isin([18,19,20,21])]["kWh"].mean()
+
+    total_kwh = df_copy["kWh"].sum()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    col1.metric("Peak Hour", f"{peak_hour:02d}:00", f"{hour_avg.max():.3f} kWh")
+    col2.metric("Night Avg", f"{night_avg*2000:.0f} W")
+    col3.metric("Midday Avg", f"{midday_avg*2000:.0f} W")
+    col4.metric("Evening Avg", f"{evening_avg*2000:.0f} W")
+    col5.metric("Total Usage", f"{total_kwh:.1f} kWh")
+
+    # ── Busiest Day (only for weekday mode)
+    if mode == "Weekday x Hour":
+        dow_avg = df_copy.groupby("weekday")["kWh"].mean()
+        busiest_day = dow_avg.idxmax()
+
+        st.info(f"🔥 Busiest Day: {busiest_day}")
 
 # ── Day vs Night ───────────────────────────────────────
 with tab3:
